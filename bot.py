@@ -6,14 +6,17 @@ from discord.ext import commands
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+    force=True,
+)
+log = logging.getLogger(__name__)
 
 
 def _load_token():
-    token = (
-        os.environ.get("DISCORD_BOT_TOKEN")
-        or os.environ.get("BOT_TOKEN")
-    )
+    token = os.environ.get("DISCORD_BOT_TOKEN") or os.environ.get("BOT_TOKEN")
     if token:
         return token.strip()
     if os.path.exists(CONFIG_PATH):
@@ -22,13 +25,11 @@ def _load_token():
                 return str(json.load(f).get("token", "")).strip()
         except Exception:
             pass
-    print("Токен не найден. Задай DISCORD_BOT_TOKEN или config.json")
+    log.error("Токен не найден. Задай DISCORD_BOT_TOKEN или config.json")
     sys.exit(1)
 
 
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
@@ -44,18 +45,20 @@ async def on_ready():
             pass
     if not guild_id:
         guild_id = 1573386089467748482
-    if guild_id:
-        guild = discord.Object(id=guild_id)
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-    else:
-        await bot.tree.sync()
-    print(f"Tickets-бот запущен: {bot.user}")
+    guild = discord.Object(id=guild_id)
+    bot.tree.copy_global_to(guild=guild)
+    synced = await bot.tree.sync(guild=guild)
+    log.info("Tickets-бот запущен: %s | Синкнуто %d команд на гильдию %d", bot.user, len(synced), guild_id)
 
 
 async def main():
     async with bot:
-        await bot.load_extension("cogs.tickets")
+        try:
+            await bot.load_extension("cogs.tickets")
+            log.info("Cog tickets загружен")
+        except Exception as e:
+            log.error("ОШИБКА загрузки cog: %s", e)
+            raise
         await bot.start(_load_token())
 
 
