@@ -222,8 +222,14 @@ async def _create_ticket(interaction: discord.Interaction, ticket_type: str, fie
     category = guild.get_channel(int(cat_id)) if cat_id else None
 
     # Права на создание канала
-    target = category or guild
-    if not target.permissions_for(guild.me).manage_channels:
+    if guild.me is None:
+        await interaction.followup.send("⚠️ Не вижу себя на сервере — перезайди ботом.", ephemeral=True)
+        return
+    if category is not None:
+        can_manage = category.permissions_for(guild.me).manage_channels
+    else:
+        can_manage = guild.me.guild_permissions.manage_channels
+    if not can_manage:
         where = f"в категории {category.mention}" if category else "на сервере"
         await interaction.followup.send(
             f"⚠️ Не могу создать канал для тикета: нет права **«Управлять каналами»** {where}.\n"
