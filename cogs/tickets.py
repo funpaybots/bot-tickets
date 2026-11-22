@@ -2,11 +2,14 @@
 """Тикеты: вопрос, заявка в стафф, жалоба."""
 
 import datetime
+import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from storage import load, save
+
+log = logging.getLogger(__name__)
 
 TICKETS_FILE = "tickets.json"
 SETTINGS_FILE = "settings.json"
@@ -42,6 +45,22 @@ def _cfg(guild_id: int) -> dict:
     return load(SETTINGS_FILE, {}).get(str(guild_id), {})
 
 
+async def _submit(interaction: discord.Interaction, ticket_type: str, fields: dict):
+    """Обёртка над созданием тикета: любая ошибка видна пользователю и в логе."""
+    try:
+        await _create_ticket(interaction, ticket_type, fields)
+    except Exception as e:
+        log.exception("Ошибка создания тикета [%s]", ticket_type)
+        msg = f"⚠️ Не смог создать тикет: `{type(e).__name__}: {e}`"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            log.exception("Не смог отправить сообщение об ошибке")
+
+
 # ── Модалки для каждого типа ──────────────────────────────────────────────────
 
 class QuestionModal(discord.ui.Modal, title="❓ Вопрос"):
@@ -54,7 +73,7 @@ class QuestionModal(discord.ui.Modal, title="❓ Вопрос"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await _create_ticket(interaction, "question", {"question": self.question.value})
+        await _submit(interaction, "question", {"question": self.question.value})
 
 
 class StaffAppModal(discord.ui.Modal, title="📋 Заявка в стафф"):
@@ -79,7 +98,7 @@ class StaffAppModal(discord.ui.Modal, title="📋 Заявка в стафф"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await _create_ticket(interaction, "staff_app", {
+        await _submit(interaction, "staff_app", {
             "age": self.age.value,
             "timezone": self.timezone.value,
             "experience": self.experience.value,
@@ -108,7 +127,7 @@ class ComplaintModal(discord.ui.Modal, title="⚠️ Жалоба"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        await _create_ticket(interaction, "complaint", {
+        await _submit(interaction, "complaint", {
             "target": self.target.value,
             "reason": self.reason.value,
             "proof": self.proof.value,
@@ -344,10 +363,7 @@ class Tickets(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        self.bot.add_view(TicketTypeView())
-        self.bot.add_view(TicketCloseView())
-        for t in ("question", "staff_app", "complaint"):
-            self.bot.add_view(SingleTicketView(t))
+        register_views(self.bot)
 
     @app_commands.command(name="setup_tickets", description="Поставить все три кнопки тикетов в один канал")
     @app_commands.describe(
@@ -457,5 +473,28 @@ class Tickets(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+# ── Регистрация persistent-вьюх (один раз, до подключения к гейтвею) ──────────
+
+_VIEWS_DONE = False
+
+
+def register_views(bot: commands.Bot):
+    """Регистрирует кнопки, чтобы они работали после рестарта бота."""
+    global _VIEWS_DONE
+    if _VIEWS_DONE:
+        return
+    try:
+        bot.add_view(TicketTypeView())
+        bot.add_view(TicketCloseView())
+        for t in ("question", "staff_app", "complaint"):
+            bot.add_view(SingleTicketView(t))
+        _VIEWS_DONE = True
+        log.info("Тикет-кнопки зарегистрированы")
+    except Exception:
+        log.exception("Не удалось зарегистрировать persistent-вьюхи")
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(Tickets(bot))
+    register_views(bot)
+

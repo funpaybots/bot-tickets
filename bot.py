@@ -51,6 +51,28 @@ async def on_ready():
     log.info("Tickets-бот запущен: %s | Синкнуто %d команд на гильдию %d", bot.user, len(synced), guild_id)
 
 
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error):
+    log.exception("Ошибка команды /%s", getattr(interaction.command, "name", "?"), exc_info=error)
+    msg = f"⚠️ Ошибка: `{type(error).__name__}: {error}`"
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        log.exception("Не смог отправить сообщение об ошибке команды")
+
+
+
+@bot.listen("on_interaction")
+async def _log_interactions(interaction: discord.Interaction):
+    """Диагностика: видно, какие кнопки реально прилетают боту."""
+    cid = (interaction.data or {}).get("custom_id")
+    if cid:
+        log.info("Клик по кнопке: %s | %s", cid, interaction.user)
+
+
 async def main():
     async with bot:
         try:
