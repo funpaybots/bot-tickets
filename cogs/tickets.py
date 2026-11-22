@@ -91,35 +91,83 @@ class QuestionModal(discord.ui.Modal, title="❓ Вопрос"):
         await _submit(interaction, "question", {"question": self.question.value})
 
 
-class StaffAppModal(discord.ui.Modal):
-    """Заявка в стафф. Роль приходит из выбора: Хелпер или Модератор."""
+class HelperAppModal(discord.ui.Modal, title="🧰 Заявка: Хелпер"):
+    """Анкета на хелпера — про помощь новичкам и общение."""
 
     age = discord.ui.TextInput(label="Возраст", placeholder="например: 17", max_length=3)
-    timezone = discord.ui.TextInput(label="Часовой пояс / активность", placeholder="например: МСК, онлайн 18:00–23:00", max_length=100)
+    timezone = discord.ui.TextInput(
+        label="Часовой пояс и когда ты онлайн",
+        placeholder="например: МСК, будни 18:00–23:00, выходные днём",
+        max_length=100,
+    )
     experience = discord.ui.TextInput(
-        label="Опыт модерации",
-        placeholder="Был ли опыт на других серверах?",
+        label="Опыт: где был хелпером или модератором?",
+        placeholder="Сервер, роль, сколько времени. Если опыта нет — напиши «нет»",
         style=discord.TextStyle.paragraph,
         max_length=300,
     )
     why = discord.ui.TextInput(
-        label="Почему хочешь в стафф?",
+        label="Почему хочешь в хелперы?",
         style=discord.TextStyle.paragraph,
         min_length=20,
         max_length=500,
     )
-
-    def __init__(self, role_label: str):
-        super().__init__(title=f"📋 Заявка: {role_label}")
-        self.role_label = role_label
+    newcomer = discord.ui.TextInput(
+        label="Новичок не понял правила и злится. Что делаешь?",
+        placeholder="Опиши, как именно будешь объяснять и что сделаешь дальше",
+        style=discord.TextStyle.paragraph,
+        min_length=20,
+        max_length=400,
+    )
 
     async def on_submit(self, interaction: discord.Interaction):
         await _submit(interaction, "staff_app", {
-            "age": self.age.value,
-            "timezone": self.timezone.value,
-            "experience": self.experience.value,
-            "why": self.why.value,
-            "role": self.role_label,
+            "__role": "Хелпер",
+            "Возраст": self.age.value,
+            "Часовой пояс и активность": self.timezone.value,
+            "Опыт": self.experience.value,
+            "Почему в хелперы": self.why.value,
+            "Ситуация: новичок и правила": self.newcomer.value,
+        })
+
+
+class ModeratorAppModal(discord.ui.Modal, title="🛡 Заявка: Модератор"):
+    """Анкета на модератора — про наказания, конфликты и знание правил."""
+
+    age = discord.ui.TextInput(label="Возраст", placeholder="например: 19", max_length=3)
+    timezone = discord.ui.TextInput(
+        label="Часовой пояс и когда ты онлайн",
+        placeholder="например: МСК, будни 20:00–02:00, выходные весь день",
+        max_length=100,
+    )
+    experience = discord.ui.TextInput(
+        label="Опыт модерации: где, какая нагрузка?",
+        placeholder="Сервер, роль, сколько участников было под тобой. Нет опыта — напиши «нет»",
+        style=discord.TextStyle.paragraph,
+        max_length=300,
+    )
+    why = discord.ui.TextInput(
+        label="Почему хочешь в модераторы?",
+        style=discord.TextStyle.paragraph,
+        min_length=20,
+        max_length=500,
+    )
+    situation = discord.ui.TextInput(
+        label="Участник оскорбляет людей в войсе. Твои действия?",
+        placeholder="По шагам: что говоришь, что делаешь, какой срок наказания и почему",
+        style=discord.TextStyle.paragraph,
+        min_length=20,
+        max_length=400,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await _submit(interaction, "staff_app", {
+            "__role": "Модератор",
+            "Возраст": self.age.value,
+            "Часовой пояс и активность": self.timezone.value,
+            "Опыт модерации": self.experience.value,
+            "Почему в модераторы": self.why.value,
+            "Ситуация: оскорбления в войсе": self.situation.value,
         })
 
 
@@ -232,12 +280,15 @@ async def _create_ticket(interaction: discord.Interaction, ticket_type: str, fie
         embed.description = "Стафф ответит в ближайшее время. Когда вопрос решён — нажми «🔒 Закрыть»."
 
     elif ticket_type == "staff_app":
-        embed.description = "Заявка принята. Стафф рассмотрит её и даст ответ."
-        embed.add_field(name="Возраст", value=fields["age"], inline=True)
-        embed.add_field(name="Часовой пояс", value=fields["timezone"], inline=True)
-        embed.add_field(name="На роль", value=fields["role"], inline=True)
-        embed.add_field(name="Опыт", value=fields["experience"], inline=False)
-        embed.add_field(name="Почему хочешь в стафф", value=fields["why"], inline=False)
+        role = fields.get("__role", "—")
+        embed.description = f"Заявка на роль **{role}**. Стафф рассмотрит её и даст ответ."
+        embed.add_field(name="На роль", value=role, inline=True)
+        embed.add_field(name="Возраст", value=fields.get("Возраст", "—"), inline=True)
+        embed.add_field(name="Активность", value=fields.get("Часовой пояс и активность", "—"), inline=True)
+        for name, value in fields.items():
+            if name.startswith("__") or name in ("Возраст", "Часовой пояс и активность"):
+                continue
+            embed.add_field(name=name, value=str(value) or "—", inline=False)
 
     elif ticket_type == "complaint":
         embed.description = "Жалоба принята. Стафф разберётся и даст ответ."
@@ -258,6 +309,8 @@ async def _create_ticket(interaction: discord.Interaction, ticket_type: str, fie
                 color=tinfo["color"],
                 timestamp=datetime.datetime.now(),
             )
+            if ticket_type == "staff_app":
+                log_embed.add_field(name="Роль", value=fields.get("__role", "—"), inline=True)
             await log_ch.send(embed=log_embed)
 
     await interaction.followup.send(f"Тикет создан: {channel.mention}", ephemeral=True)
@@ -341,11 +394,11 @@ class StaffRoleView(discord.ui.View):
 
     @discord.ui.button(label="🧰 Хелпер", style=discord.ButtonStyle.primary)
     async def helper(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(StaffAppModal("Хелпер"))
+        await interaction.response.send_modal(HelperAppModal())
 
     @discord.ui.button(label="🛡 Модератор", style=discord.ButtonStyle.success)
     async def moderator(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(StaffAppModal("Модератор"))
+        await interaction.response.send_modal(ModeratorAppModal())
 
 
 class SingleTicketView(discord.ui.View):
