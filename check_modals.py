@@ -28,7 +28,7 @@ def main() -> int:
         except TypeError:
             continue  # модалка требует аргументов в конструкторе
         for child in modal.children:
-            data = child.to_dict()
+            data = child.to_component_dict() if hasattr(child, "to_component_dict") else child.to_dict()
             label = data.get("label", "") or ""
             placeholder = data.get("placeholder", "") or ""
             if not 1 <= len(label) <= LIMIT_LABEL:
