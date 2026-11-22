@@ -45,6 +45,21 @@ def _cfg(guild_id: int) -> dict:
     return load(SETTINGS_FILE, {}).get(str(guild_id), {})
 
 
+SEND_PERMS = [
+    ("view_channel", "Смотреть канал"),
+    ("send_messages", "Отправлять сообщения"),
+    ("embed_links", "Встраивать ссылки"),
+]
+
+
+def _missing_send(channel, me) -> list:
+    """Что боту мешает писать в канал — по-человечески."""
+    if me is None:
+        return ["роль бота не найдена на сервере"]
+    perms = channel.permissions_for(me)
+    return [label for attr, label in SEND_PERMS if not getattr(perms, attr, False)]
+
+
 async def _submit(interaction: discord.Interaction, ticket_type: str, fields: dict):
     """Обёртка над созданием тикета: любая ошибка видна пользователю и в логе."""
     try:
@@ -76,7 +91,9 @@ class QuestionModal(discord.ui.Modal, title="❓ Вопрос"):
         await _submit(interaction, "question", {"question": self.question.value})
 
 
-class StaffAppModal(discord.ui.Modal, title="📋 Заявка в стафф"):
+class StaffAppModal(discord.ui.Modal):
+    """Заявка в стафф. Роль приходит из выбора: Хелпер или Модератор."""
+
     age = discord.ui.TextInput(label="Возраст", placeholder="например: 17", max_length=3)
     timezone = discord.ui.TextInput(label="Часовой пояс / активность", placeholder="например: МСК, онлайн 18:00–23:00", max_length=100)
     experience = discord.ui.TextInput(
@@ -91,11 +108,10 @@ class StaffAppModal(discord.ui.Modal, title="📋 Заявка в стафф"):
         min_length=20,
         max_length=500,
     )
-    role = discord.ui.TextInput(
-        label="На какую роль подаёшь заявку?",
-        placeholder="Хелпер / Модератор",
-        max_length=50,
-    )
+
+    def __init__(self, role_label: str):
+        super().__init__(title=f"📋 Заявка: {role_label}")
+        self.role_label = role_label
 
     async def on_submit(self, interaction: discord.Interaction):
         await _submit(interaction, "staff_app", {
@@ -103,7 +119,7 @@ class StaffAppModal(discord.ui.Modal, title="📋 Заявка в стафф"):
             "timezone": self.timezone.value,
             "experience": self.experience.value,
             "why": self.why.value,
-            "role": self.role.value,
+            "role": self.role_label,
         })
 
 
@@ -156,6 +172,17 @@ async def _create_ticket(interaction: discord.Interaction, ticket_type: str, fie
     tinfo = TICKET_TYPES[ticket_type]
     cat_id = cfg.get("ticket_category_id")
     category = guild.get_channel(int(cat_id)) if cat_id else None
+
+    # Права на создание канала
+    target = category or guild
+    if not target.permissions_for(guild.me).manage_channels:
+        where = f"в категории {category.mention}" if category else "на сервере"
+        await interaction.followup.send(
+            f"⚠️ Не могу создать канал для тикета: нет права **«Управлять каналами»** {where}.\n"
+            "Дай это право роли бота — иначе тикеты не открываются.",
+            ephemeral=True,
+        )
+        return
 
     # Права канала
     overwrites = {
@@ -306,6 +333,21 @@ async def _do_close(channel: discord.TextChannel, closer: discord.Member, intera
 
 # ── Выбор типа тикета ─────────────────────────────────────────────────────────
 
+class StaffRoleView(discord.ui.View):
+    """Выбор роли перед заявкой: Хелпер или Модератор."""
+
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="🧰 Хелпер", style=discord.ButtonStyle.primary)
+    async def helper(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(StaffAppModal("Хелпер"))
+
+    @discord.ui.button(label="🛡 Модератор", style=discord.ButtonStyle.success)
+    async def moderator(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(StaffAppModal("Модератор"))
+
+
 class SingleTicketView(discord.ui.View):
     """Одна кнопка для конкретного типа тикета."""
 
@@ -316,7 +358,6 @@ class SingleTicketView(discord.ui.View):
     }
     MODALS = {
         "question":  QuestionModal,
-        "staff_app": StaffAppModal,
         "complaint": ComplaintModal,
     }
 
@@ -332,9 +373,15 @@ class SingleTicketView(discord.ui.View):
         self.add_item(btn)
 
     def _make_callback(self, ticket_type: str):
-        modal_cls = self.MODALS[ticket_type]
         async def callback(interaction: discord.Interaction):
-            await interaction.response.send_modal(modal_cls())
+            if ticket_type == "staff_app":
+                await interaction.response.send_message(
+                    "📋 Куда подаёшь заявку?",
+                    view=StaffRoleView(),
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_modal(self.MODALS[ticket_type]())
         return callback
 
 
@@ -348,11 +395,16 @@ class TicketTypeView(discord.ui.View):
 
     @discord.ui.button(label="📋 Заявка в стафф", style=discord.ButtonStyle.success, custom_id="ticket_staff_app")
     async def staff_app(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(StaffAppModal())
+        await interaction.response.send_message(
+            "📋 Куда подаёшь заявку?",
+            view=StaffRoleView(),
+            ephemeral=True,
+        )
 
     @discord.ui.button(label="⚠️ Жалоба", style=discord.ButtonStyle.danger, custom_id="ticket_complaint")
     async def complaint(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(ComplaintModal())
+
 
 
 # ── Ког ───────────────────────────────────────────────────────────────────────
@@ -386,6 +438,14 @@ class Tickets(commands.Cog):
             gcfg["ticket_category_id"] = category.id
         save(SETTINGS_FILE, cfg)
 
+        missing = _missing_send(channel, interaction.guild.me)
+        if missing:
+            await interaction.response.send_message(
+                f"⚠️ Не могу писать в {channel.mention}. Не хватает прав: **{', '.join(missing)}**.",
+                ephemeral=True,
+            )
+            return
+
         embed = discord.Embed(
             title="🎫 Поддержка",
             description=(
@@ -404,40 +464,107 @@ class Tickets(commands.Cog):
     @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
     @app_commands.checks.has_permissions(administrator=True)
     async def post_question(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
-        self._save_cfg(interaction.guild.id, log_channel, category)
-        embed = discord.Embed(
+        await self._post_panel(
+            interaction, channel, log_channel, category, "question",
             title="❓ Вопросы",
             description="Есть вопрос к стаффу? Нажми кнопку — мы ответим.",
             color=0xa9c9ff,
         )
-        await channel.send(embed=embed, view=SingleTicketView("question"))
-        await interaction.response.send_message("✅ Готово!", ephemeral=True)
 
     @app_commands.command(name="post_staff_app", description="Поставить кнопку «Заявка в стафф» в канал")
     @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
     @app_commands.checks.has_permissions(administrator=True)
     async def post_staff_app(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
-        self._save_cfg(interaction.guild.id, log_channel, category)
-        embed = discord.Embed(
+        await self._post_panel(
+            interaction, channel, log_channel, category, "staff_app",
             title="📋 Заявка в стафф",
-            description="Хочешь стать частью команды? Заполни заявку — мы рассмотрим.",
+            description="Хочешь стать частью команды? Жми кнопку и выбери: Хелпер или Модератор.",
             color=0x57f287,
         )
-        await channel.send(embed=embed, view=SingleTicketView("staff_app"))
-        await interaction.response.send_message("✅ Готово!", ephemeral=True)
 
     @app_commands.command(name="post_complaint", description="Поставить кнопку «Жалоба» в канал")
     @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
     @app_commands.checks.has_permissions(administrator=True)
     async def post_complaint(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
-        self._save_cfg(interaction.guild.id, log_channel, category)
-        embed = discord.Embed(
+        await self._post_panel(
+            interaction, channel, log_channel, category, "complaint",
             title="⚠️ Жалобы",
             description="Есть жалоба на участника или стафф? Нажми кнопку и опиши ситуацию.",
             color=0xed4245,
         )
-        await channel.send(embed=embed, view=SingleTicketView("complaint"))
-        await interaction.response.send_message("✅ Готово!", ephemeral=True)
+
+    async def _post_panel(self, interaction, channel, log_channel, category, kind, *, title, description, color):
+        """Общая логика постинга панели: сохранить конфиг, проверить права, отправить."""
+        missing = _missing_send(channel, interaction.guild.me)
+        if missing:
+            await interaction.response.send_message(
+                f"⚠️ Не могу писать в {channel.mention}. Не хватает прав: "
+                f"**{', '.join(missing)}**.\n"
+                "Проверь настройки канала для роли бота (или дай роль бота в правах канала).",
+                ephemeral=True,
+            )
+            return
+
+        self._save_cfg(interaction.guild.id, log_channel, category)
+        embed = discord.Embed(title=title, description=description, color=color)
+        try:
+            await channel.send(embed=embed, view=SingleTicketView(kind))
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"⚠️ Discord не дал отправить сообщение в {channel.mention} — прав нет у роли бота в этом канале.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(f"✅ Готово! Панель в {channel.mention}", ephemeral=True)
+
+
+    @app_commands.command(name="check_perms", description="Проверить, хватает ли боту прав")
+    @app_commands.describe(
+        channel="Канал с кнопками (проверить)",
+        log_channel="Канал логов (проверить)",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def check_perms(
+        self,
+        interaction: discord.Interaction,
+        channel: discord.TextChannel = None,
+        log_channel: discord.TextChannel = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        me = guild.me
+        if me is None:
+            await interaction.followup.send("⚠️ Не вижу себя на сервере.", ephemeral=True)
+            return
+
+        rows = []
+        gp = me.guild_permissions
+        rows.append(("Управлять каналами (сервер)", gp.manage_channels))
+        rows.append(("Управлять сообщениями (сервер)", gp.manage_messages))
+
+        targets = [ch for ch in (channel, log_channel) if ch]
+        if not targets:
+            cfg = _cfg(guild.id)
+            for key in ("ticket_log_channel_id",):
+                cid = cfg.get(key)
+                ch = guild.get_channel(int(cid)) if cid else None
+                if ch:
+                    targets.append(ch)
+
+        for ch in targets:
+            p = ch.permissions_for(me)
+            rows.append((f"{ch.name}: смотреть канал", p.view_channel))
+            rows.append((f"{ch.name}: отправлять сообщения", p.send_messages))
+            rows.append((f"{ch.name}: embed-ссылки", p.embed_links))
+            rows.append((f"{ch.name}: читать историю", p.read_message_history))
+
+        embed = discord.Embed(
+            title="🔧 Права бота",
+            description="\n".join(("✅ " if ok else "❌ ") + name for name, ok in rows),
+            color=discord.Color.from_str("#a9c9ff"),
+        )
+        embed.set_footer(text="❌ — дай это право роли бота в настройках канала/сервера")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     def _save_cfg(self, guild_id: int, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
         cfg = load(SETTINGS_FILE, {})
