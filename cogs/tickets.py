@@ -302,7 +302,8 @@ async def _create_ticket(interaction: discord.Interaction, ticket_type: str, fie
         embed.add_field(name="Причина", value=fields["reason"], inline=False)
         embed.add_field(name="Доказательства", value=fields["proof"], inline=False)
 
-    await channel.send(content=member.mention, embed=embed, view=TicketCloseView())
+    view = StaffAppActionView() if ticket_type == "staff_app" else AnswerView()
+    await channel.send(content=member.mention, embed=embed, view=view)
 
     # Лог
     log_ch_id = cfg.get("ticket_log_channel_id")
@@ -388,6 +389,247 @@ async def _do_close(channel: discord.TextChannel, closer: discord.Member, intera
         await channel.delete(reason=f"Тикет закрыт {closer}")
     except discord.HTTPException:
         pass
+
+
+# ── Ответ стаффа на вопрос/жалобу ─────────────────────────────────────────────
+
+def _get_ticket(channel_id: int):
+    """Данные тикета по id канала."""
+    data = load(TICKETS_FILE, {})
+    return data, data.get(str(channel_id))
+
+
+async def _dm(member, embed) -> bool:
+    if member is None:
+        return False
+    try:
+        await member.send(embed=embed)
+        return True
+    except discord.HTTPException:
+        return False
+
+
+class AnswerModal(discord.ui.Modal, title="✍️ Ответ на обращение"):
+    answer = discord.ui.TextInput(
+        label="Твой ответ",
+        style=discord.TextStyle.paragraph,
+        min_length=5,
+        max_length=1000,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await _submit_answer(interaction, self.answer.value)
+
+
+async def _submit_answer(interaction: discord.Interaction, text: str):
+    data, info = _get_ticket(interaction.channel.id)
+    if not info or not info.get("open"):
+        await interaction.response.send_message("Это не активный тикет.", ephemeral=True)
+        return
+    if not _is_staff(interaction.user):
+        await interaction.response.send_message("Отвечает только стафф.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    info["answered"] = True
+    info["answered_by"] = str(interaction.user)
+    info["answered_at"] = _now_str()
+    info["answer"] = text
+    save(TICKETS_FILE, data)
+
+    embed = discord.Embed(
+        title="✍️ Ответ стаффа",
+        description=text,
+        color=0x57f287,
+        timestamp=datetime.datetime.now(),
+    )
+    embed.set_footer(text=f"Ответил: {interaction.user}")
+    await interaction.channel.send(content=f"<@{info['user_id']}>", embed=embed)
+
+    member = interaction.guild.get_member(int(info["user_id"]))
+    tinfo = TICKET_TYPES.get(info.get("type", "question"), TICKET_TYPES["question"])
+    dm_embed = discord.Embed(
+        title=f"✍️ Ответ на твоё обращение ({tinfo['label']})",
+        description=text,
+        color=0x57f287,
+        timestamp=datetime.datetime.now(),
+    )
+    dm_embed.set_footer(text=f"Сервер: {interaction.guild.name}")
+    sent = await _dm(member, dm_embed)
+    if not sent:
+        await interaction.followup.send(
+            "Ответ отправлен, но в ЛС написать не смог — у автора закрыты личные сообщения.",
+            ephemeral=True,
+        )
+
+
+class AnswerView(discord.ui.View):
+    """Кнопки в тикете-вопросе и тикете-жалобе."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✍️ Ответить", style=discord.ButtonStyle.success, custom_id="ticket_answer")
+    async def answer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Отвечает только стафф.", ephemeral=True)
+            return
+        await _open_modal(interaction, AnswerModal())
+
+    @discord.ui.button(label="🔒 Закрыть", style=discord.ButtonStyle.secondary, custom_id="ticket_close_ans")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_close(interaction.channel, interaction.user, interaction)
+
+
+# ── Заявка в стафф: принять / отклонить ───────────────────────────────────────
+
+ROLE_BY_NAME = {
+    "Хелпер": 1573422779376865280,
+    "Модератор": 1573422776919007424,
+}
+
+
+class RejectModal(discord.ui.Modal, title="❌ Отказ по заявке"):
+    reason = discord.ui.TextInput(
+        label="Причина отказа",
+        style=discord.TextStyle.paragraph,
+        min_length=5,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await _reject_app(interaction, self.reason.value)
+
+
+async def _accept_app(interaction: discord.Interaction):
+    data, info = _get_ticket(interaction.channel.id)
+    if not info or not info.get("open"):
+        await interaction.response.send_message("Это не активный тикет.", ephemeral=True)
+        return
+    if not _is_staff(interaction.user):
+        await interaction.response.send_message("Решать по заявке может только стафф.", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    member = guild.get_member(int(info["user_id"]))
+    role_name = (info.get("fields") or {}).get("__role", "")
+    role = guild.get_role(ROLE_BY_NAME.get(role_name, 0))
+
+    if member is None:
+        await interaction.response.send_message(
+            "Не нашёл участника на сервере — возможно, он уже вышел.", ephemeral=True
+        )
+        return
+    if role is None:
+        await interaction.response.send_message(
+            f"Не нашёл роль «{role_name}». Проверь ID ролей в коде бота.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer()
+    try:
+        await member.add_roles(role, reason=f"Заявка принята: {interaction.user}")
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "Не могу выдать роль: она выше моей в списке ролей или у меня нет права "
+            "«Управлять ролями».",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title="✅ Заявка принята",
+        description=f"{member.mention} получил роль **{role.name}**.",
+        color=0x57f287,
+        timestamp=datetime.datetime.now(),
+    )
+    embed.set_footer(text=f"Принял: {interaction.user}")
+    await interaction.channel.send(embed=embed)
+
+    dm_embed = discord.Embed(
+        title="✅ Твою заявку приняли",
+        description=(
+            f"Поздравляю! Тебе выдана роль **{role.name}** на сервере **{guild.name}**.\n"
+            "Загляни в канал для стаффа — там задачи и общение команды."
+        ),
+        color=0x57f287,
+    )
+    await _dm(member, dm_embed)
+
+    info["decision"] = "accepted"
+    info["decided_by"] = str(interaction.user)
+    save(TICKETS_FILE, data)
+
+    await _do_close(interaction.channel, interaction.user)
+
+
+async def _reject_app(interaction: discord.Interaction, reason: str):
+    data, info = _get_ticket(interaction.channel.id)
+    if not info or not info.get("open"):
+        await interaction.response.send_message("Это не активный тикет.", ephemeral=True)
+        return
+    if not _is_staff(interaction.user):
+        await interaction.response.send_message("Решать по заявке может только стафф.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    guild = interaction.guild
+    member = guild.get_member(int(info["user_id"]))
+    role_name = (info.get("fields") or {}).get("__role", "—")
+
+    embed = discord.Embed(
+        title="❌ Заявка отклонена",
+        description=f"Роль: **{role_name}**\nПричина: {reason}",
+        color=0xed4245,
+        timestamp=datetime.datetime.now(),
+    )
+    embed.set_footer(text=f"Отклонил: {interaction.user}")
+    await interaction.channel.send(embed=embed)
+
+    dm_embed = discord.Embed(
+        title="❌ Заявка отклонена",
+        description=(
+            f"Твоя заявка на роль **{role_name}** на сервере **{guild.name}** отклонена.\n\n"
+            f"**Причина:** {reason}\n\n"
+            "Можешь попробовать позже — например, когда подрастёт активность."
+        ),
+        color=0xed4245,
+    )
+    sent = await _dm(member, dm_embed)
+    if not sent:
+        await interaction.followup.send(
+            "Отказ записан, но в ЛС написать не смог — у автора закрыты личные сообщения.",
+            ephemeral=True,
+        )
+
+    info["decision"] = "rejected"
+    info["decision_reason"] = reason
+    info["decided_by"] = str(interaction.user)
+    save(TICKETS_FILE, data)
+
+    await _do_close(interaction.channel, interaction.user)
+
+
+class StaffAppActionView(discord.ui.View):
+    """Кнопки в тикете-заявке."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.success, custom_id="ticket_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _accept_app(interaction)
+
+    @discord.ui.button(label="❌ Отклонить", style=discord.ButtonStyle.danger, custom_id="ticket_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Решает только стафф.", ephemeral=True)
+            return
+        await _open_modal(interaction, RejectModal())
+
+    @discord.ui.button(label="🔒 Закрыть", style=discord.ButtonStyle.secondary, custom_id="ticket_close_app")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _do_close(interaction.channel, interaction.user, interaction)
 
 
 # ── Выбор типа тикета ─────────────────────────────────────────────────────────
@@ -689,6 +931,8 @@ def register_views(bot: commands.Bot):
         bot.add_view(TicketTypeView())
         bot.add_view(TicketCloseView())
         bot.add_view(StaffRoleView())
+        bot.add_view(AnswerView())
+        bot.add_view(StaffAppActionView())
         for t in ("question", "staff_app", "complaint"):
             bot.add_view(SingleTicketView(t))
         _VIEWS_DONE = True
