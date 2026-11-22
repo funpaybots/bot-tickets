@@ -113,7 +113,7 @@ class HelperAppModal(discord.ui.Modal, title="🧰 Заявка: Хелпер"):
         max_length=500,
     )
     newcomer = discord.ui.TextInput(
-        label="Новичок не понял правила и злится. Что делаешь?",
+        label="Новичок не понял правила и злится. Действия?",
         placeholder="Опиши, как именно будешь объяснять и что сделаешь дальше",
         style=discord.TextStyle.paragraph,
         min_length=20,
@@ -153,7 +153,7 @@ class ModeratorAppModal(discord.ui.Modal, title="🛡 Заявка: Модера
         max_length=500,
     )
     situation = discord.ui.TextInput(
-        label="Участник оскорбляет людей в войсе. Твои действия?",
+        label="Оскорбления в войсе. Твои действия?",
         placeholder="По шагам: что говоришь, что делаешь, какой срок наказания и почему",
         style=discord.TextStyle.paragraph,
         min_length=20,
