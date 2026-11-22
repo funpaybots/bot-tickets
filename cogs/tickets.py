@@ -404,7 +404,7 @@ class Tickets(commands.Cog):
     @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
     @app_commands.checks.has_permissions(administrator=True)
     async def post_question(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
-        await self._save_cfg(interaction.guild.id, log_channel, category)
+        self._save_cfg(interaction.guild.id, log_channel, category)
         embed = discord.Embed(
             title="❓ Вопросы",
             description="Есть вопрос к стаффу? Нажми кнопку — мы ответим.",
@@ -417,7 +417,7 @@ class Tickets(commands.Cog):
     @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
     @app_commands.checks.has_permissions(administrator=True)
     async def post_staff_app(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
-        await self._save_cfg(interaction.guild.id, log_channel, category)
+        self._save_cfg(interaction.guild.id, log_channel, category)
         embed = discord.Embed(
             title="📋 Заявка в стафф",
             description="Хочешь стать частью команды? Заполни заявку — мы рассмотрим.",
@@ -430,7 +430,7 @@ class Tickets(commands.Cog):
     @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
     @app_commands.checks.has_permissions(administrator=True)
     async def post_complaint(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
-        await self._save_cfg(interaction.guild.id, log_channel, category)
+        self._save_cfg(interaction.guild.id, log_channel, category)
         embed = discord.Embed(
             title="⚠️ Жалобы",
             description="Есть жалоба на участника или стафф? Нажми кнопку и опиши ситуацию.",
