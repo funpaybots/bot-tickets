@@ -42,6 +42,8 @@ async def on_ready():
                 guild_id = int(json.load(f).get("guild_id", 0))
         except Exception:
             pass
+    if not guild_id:
+        guild_id = 1573386089467748482
     if guild_id:
         guild = discord.Object(id=guild_id)
         bot.tree.copy_global_to(guild=guild)
