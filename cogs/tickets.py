@@ -386,19 +386,35 @@ async def _do_close(channel: discord.TextChannel, closer: discord.Member, intera
 
 # ── Выбор типа тикета ─────────────────────────────────────────────────────────
 
+async def _open_modal(interaction: discord.Interaction, modal: discord.ui.Modal):
+    """Открывает модалку, а если не получилось — говорит почему, а не молчит."""
+    try:
+        await interaction.response.send_modal(modal)
+    except Exception as e:
+        log.exception("Не удалось открыть модалку %s", type(modal).__name__)
+        msg = f"⚠️ Анкета не открылась: `{type(e).__name__}: {e}`"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            log.exception("Не смог сообщить об ошибке модалки")
+
+
 class StaffRoleView(discord.ui.View):
     """Выбор роли перед заявкой: Хелпер или Модератор."""
 
     def __init__(self):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
 
-    @discord.ui.button(label="🧰 Хелпер", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="🧰 Хелпер", style=discord.ButtonStyle.primary, custom_id="staff_role_helper")
     async def helper(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(HelperAppModal())
+        await _open_modal(interaction, HelperAppModal())
 
-    @discord.ui.button(label="🛡 Модератор", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="🛡 Модератор", style=discord.ButtonStyle.success, custom_id="staff_role_moderator")
     async def moderator(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ModeratorAppModal())
+        await _open_modal(interaction, ModeratorAppModal())
 
 
 class SingleTicketView(discord.ui.View):
@@ -434,7 +450,7 @@ class SingleTicketView(discord.ui.View):
                     ephemeral=True,
                 )
                 return
-            await interaction.response.send_modal(self.MODALS[ticket_type]())
+            await _open_modal(interaction, self.MODALS[ticket_type]())
         return callback
 
 
@@ -444,7 +460,7 @@ class TicketTypeView(discord.ui.View):
 
     @discord.ui.button(label="❓ Вопрос", style=discord.ButtonStyle.primary, custom_id="ticket_question")
     async def question(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(QuestionModal())
+        await _open_modal(interaction, QuestionModal())
 
     @discord.ui.button(label="📋 Заявка в стафф", style=discord.ButtonStyle.success, custom_id="ticket_staff_app")
     async def staff_app(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -456,7 +472,7 @@ class TicketTypeView(discord.ui.View):
 
     @discord.ui.button(label="⚠️ Жалоба", style=discord.ButtonStyle.danger, custom_id="ticket_complaint")
     async def complaint(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ComplaintModal())
+        await _open_modal(interaction, ComplaintModal())
 
 
 
@@ -666,6 +682,7 @@ def register_views(bot: commands.Bot):
     try:
         bot.add_view(TicketTypeView())
         bot.add_view(TicketCloseView())
+        bot.add_view(StaffRoleView())
         for t in ("question", "staff_app", "complaint"):
             bot.add_view(SingleTicketView(t))
         _VIEWS_DONE = True
