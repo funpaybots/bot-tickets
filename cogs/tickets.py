@@ -287,6 +287,38 @@ async def _do_close(channel: discord.TextChannel, closer: discord.Member, intera
 
 # ── Выбор типа тикета ─────────────────────────────────────────────────────────
 
+class SingleTicketView(discord.ui.View):
+    """Одна кнопка для конкретного типа тикета."""
+
+    LABELS = {
+        "question":  ("❓ Задать вопрос",    discord.ButtonStyle.primary),
+        "staff_app": ("📋 Подать заявку",    discord.ButtonStyle.success),
+        "complaint": ("⚠️ Написать жалобу", discord.ButtonStyle.danger),
+    }
+    MODALS = {
+        "question":  QuestionModal,
+        "staff_app": StaffAppModal,
+        "complaint": ComplaintModal,
+    }
+
+    def __init__(self, ticket_type: str):
+        super().__init__(timeout=None)
+        label, style = self.LABELS[ticket_type]
+        btn = discord.ui.Button(
+            label=label,
+            style=style,
+            custom_id=f"ticket_single_{ticket_type}",
+        )
+        btn.callback = self._make_callback(ticket_type)
+        self.add_item(btn)
+
+    def _make_callback(self, ticket_type: str):
+        modal_cls = self.MODALS[ticket_type]
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(modal_cls())
+        return callback
+
+
 class TicketTypeView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -314,10 +346,12 @@ class Tickets(commands.Cog):
     async def on_ready(self):
         self.bot.add_view(TicketTypeView())
         self.bot.add_view(TicketCloseView())
+        for t in ("question", "staff_app", "complaint"):
+            self.bot.add_view(SingleTicketView(t))
 
-    @app_commands.command(name="setup_tickets", description="Поставить панель тикетов в канал")
+    @app_commands.command(name="setup_tickets", description="Поставить все три кнопки тикетов в один канал")
     @app_commands.describe(
-        channel="Канал где будет кнопка тикетов",
+        channel="Канал где будут все три кнопки",
         log_channel="Канал логов",
         category="Категория для тикетов (необязательно)",
     )
@@ -349,6 +383,53 @@ class Tickets(commands.Cog):
         )
         await channel.send(embed=embed, view=TicketTypeView())
         await interaction.response.send_message("✅ Готово!", ephemeral=True)
+
+    @app_commands.command(name="post_question", description="Поставить кнопку «Задать вопрос» в канал")
+    @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def post_question(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
+        await self._save_cfg(interaction.guild.id, log_channel, category)
+        embed = discord.Embed(
+            title="❓ Вопросы",
+            description="Есть вопрос к стаффу? Нажми кнопку — мы ответим.",
+            color=0xa9c9ff,
+        )
+        await channel.send(embed=embed, view=SingleTicketView("question"))
+        await interaction.response.send_message("✅ Готово!", ephemeral=True)
+
+    @app_commands.command(name="post_staff_app", description="Поставить кнопку «Заявка в стафф» в канал")
+    @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def post_staff_app(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
+        await self._save_cfg(interaction.guild.id, log_channel, category)
+        embed = discord.Embed(
+            title="📋 Заявка в стафф",
+            description="Хочешь стать частью команды? Заполни заявку — мы рассмотрим.",
+            color=0x57f287,
+        )
+        await channel.send(embed=embed, view=SingleTicketView("staff_app"))
+        await interaction.response.send_message("✅ Готово!", ephemeral=True)
+
+    @app_commands.command(name="post_complaint", description="Поставить кнопку «Жалоба» в канал")
+    @app_commands.describe(channel="Канал", log_channel="Канал логов", category="Категория для тикетов")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def post_complaint(self, interaction: discord.Interaction, channel: discord.TextChannel, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
+        await self._save_cfg(interaction.guild.id, log_channel, category)
+        embed = discord.Embed(
+            title="⚠️ Жалобы",
+            description="Есть жалоба на участника или стафф? Нажми кнопку и опиши ситуацию.",
+            color=0xed4245,
+        )
+        await channel.send(embed=embed, view=SingleTicketView("complaint"))
+        await interaction.response.send_message("✅ Готово!", ephemeral=True)
+
+    def _save_cfg(self, guild_id: int, log_channel: discord.TextChannel, category: discord.CategoryChannel = None):
+        cfg = load(SETTINGS_FILE, {})
+        gcfg = cfg.setdefault(str(guild_id), {})
+        gcfg["ticket_log_channel_id"] = log_channel.id
+        if category:
+            gcfg["ticket_category_id"] = category.id
+        save(SETTINGS_FILE, cfg)
 
     @app_commands.command(name="close", description="Закрыть текущий тикет")
     async def close(self, interaction: discord.Interaction):
