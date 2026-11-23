@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 TICKETS_FILE = "tickets.json"
 SETTINGS_FILE = "settings.json"
+RATINGS_FILE = "ratings.json"
 
 STAFF_ROLE_IDS = [
     1573422779376865280,  # Хелпер
@@ -383,6 +384,21 @@ async def _do_close(channel: discord.TextChannel, closer: discord.Member, intera
             )
             await log_ch.send(embed=log_embed)
 
+    # Просим автора оценить хелпера (в ЛС), если ответ был
+    helper_id = info.get("answered_by_id")
+    author_id = int(info.get("user_id") or 0)
+    if helper_id and author_id and author_id != int(helper_id):
+        author = channel.guild.get_member(author_id)
+        helper = channel.guild.get_member(int(helper_id))
+        helper_name = (helper.display_name if helper else None) or str(info.get("answered_by") or "стафф")
+        view = RatingView(
+            channel.guild.id, channel.id, author_id, int(helper_id)
+        )._arm_custom_ids()
+        bot = getattr(interaction, "client", None) if interaction is not None else None
+        if author is not None and bot is not None:
+            bot.add_view(view)
+            await _dm(author, _rating_embed(helper_name), view=view)
+
     import asyncio
     await asyncio.sleep(5)
     try:
@@ -399,14 +415,142 @@ def _get_ticket(channel_id: int):
     return data, data.get(str(channel_id))
 
 
-async def _dm(member, embed) -> bool:
+async def _dm(member, embed, view=None) -> bool:
     if member is None:
         return False
     try:
-        await member.send(embed=embed)
+        if view is not None:
+            await member.send(embed=embed, view=view)
+        else:
+            await member.send(embed=embed)
         return True
     except discord.HTTPException:
         return False
+
+
+# ── Оценка хелпера после закрытия тикета ──────────────────────────────────────
+
+def _save_rating(guild_id: int, ticket_id: int, helper_id: int, stars: int, by_id: int) -> bool:
+    """Сохранить оценку. False — за этот тикет уже оценивали."""
+    data = load(RATINGS_FILE, {})
+    guild = data.setdefault(str(guild_id), {})
+    key = str(ticket_id)
+    if key in guild:
+        return False
+    guild[key] = {
+        "helper_id": helper_id,
+        "stars": int(stars),
+        "by": by_id,
+        "ts": _now_str(),
+    }
+    save(RATINGS_FILE, data)
+    return True
+
+
+def _ratings_summary(guild_id: int):
+    """[(helper_id, средняя, число оценок)] по убыванию средней."""
+    guild = load(RATINGS_FILE, {}).get(str(guild_id), {})
+    per = {}
+    for r in guild.values():
+        try:
+            hid = int(r.get("helper_id") or 0)
+            stars = int(r.get("stars") or 0)
+        except (TypeError, ValueError):
+            continue
+        if hid <= 0 or not 1 <= stars <= 5:
+            continue
+        total, count = per.get(hid, (0, 0))
+        per[hid] = (total + stars, count + 1)
+    rows = [(hid, total / count, count) for hid, (total, count) in per.items()]
+    rows.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    return rows
+
+
+class RatingView(discord.ui.View):
+    """Приходит автору тикета в ЛС после закрытия: оцени работу хелпера."""
+
+    def __init__(self, guild_id: int, ticket_id: int, author_id: int, helper_id: int):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.ticket_id = ticket_id
+        self.author_id = author_id
+        self.helper_id = helper_id
+
+    async def _rate(self, interaction: discord.Interaction, stars: int):
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "Оценить может только автор тикета.", ephemeral=True
+            )
+            return
+        saved = _save_rating(self.guild_id, self.ticket_id, self.helper_id, stars, self.author_id)
+        if not saved:
+            await interaction.response.edit_message(
+                content="Этот тикет ты уже оценил. Спасибо! ⭐", embed=None, view=None
+            )
+            return
+        await interaction.response.edit_message(
+            content=f"Спасибо! Оценка **{stars}⭐** записана.", embed=None, view=None
+        )
+
+    @discord.ui.button(label="1⭐", custom_id="trate_placeholder_1")
+    async def star1(self, interaction, button):
+        await self._rate(interaction, 1)
+
+    @discord.ui.button(label="2⭐", custom_id="trate_placeholder_2")
+    async def star2(self, interaction, button):
+        await self._rate(interaction, 2)
+
+    @discord.ui.button(label="3⭐", custom_id="trate_placeholder_3")
+    async def star3(self, interaction, button):
+        await self._rate(interaction, 3)
+
+    @discord.ui.button(label="4⭐", custom_id="trate_placeholder_4")
+    async def star4(self, interaction, button):
+        await self._rate(interaction, 4)
+
+    @discord.ui.button(label="5⭐", custom_id="trate_placeholder_5")
+    async def star5(self, interaction, button):
+        await self._rate(interaction, 5)
+
+    def _arm_custom_ids(self):
+        """Уникальные custom_id под конкретный тикет (для persistent после рестарта)."""
+        for i, child in enumerate(self.children, start=1):
+            child.custom_id = f"trate_{self.ticket_id}_{i}"
+        return self
+
+
+def _rating_embed(helper_name: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="⭐ Как всё прошло?",
+        description=(
+            f"Твой тикет закрыл **{helper_name}**.\n"
+            f"Оцени работу хелпера — это займет 2 секунды."
+        ),
+        color=0xffd166,
+    )
+    embed.set_footer(text="Твоя оценка видна только стаффу")
+    return embed
+
+
+def _rearm_rating_views(bot: commands.Bot):
+    """После рестарта снова включаем кнопки в ЛС у тех, кто ещё не оценил."""
+    tickets = load(TICKETS_FILE, {})
+    ratings = load(RATINGS_FILE, {})
+    for guild_id, guild_tickets in tickets.items():
+        rated = ratings.get(guild_id, {})
+        for ticket_id, info in guild_tickets.items():
+            if info.get("open"):
+                continue
+            helper_id = info.get("answered_by_id")
+            if not helper_id or ticket_id in rated:
+                continue
+            try:
+                view = RatingView(
+                    int(guild_id), int(ticket_id), int(info.get("user_id") or 0), int(helper_id)
+                )._arm_custom_ids()
+                bot.add_view(view)
+            except (TypeError, ValueError):
+                continue
 
 
 class AnswerModal(discord.ui.Modal, title="✍️ Ответ на обращение"):
@@ -433,6 +577,7 @@ async def _submit_answer(interaction: discord.Interaction, text: str):
     await interaction.response.defer()
     info["answered"] = True
     info["answered_by"] = str(interaction.user)
+    info["answered_by_id"] = interaction.user.id
     info["answered_at"] = _now_str()
     info["answer"] = text
     save(TICKETS_FILE, data)
@@ -916,6 +1061,29 @@ class Tickets(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="ticket_ratings", description="Рейтинг хелперов по оценкам из тикетов ⭐")
+    async def ticket_ratings(self, interaction: discord.Interaction):
+        rows = _ratings_summary(interaction.guild.id)
+        if not rows:
+            await interaction.response.send_message(
+                "Пока нет оценок. Они приходят авторам тикетов после закрытия.", ephemeral=True
+            )
+            return
+        medals = ["🥇", "🥈", "🥉"] + ["⭐"] * 7
+        lines = []
+        for i, (helper_id, avg, count) in enumerate(rows[:10]):
+            stars = "⭐" * max(1, min(5, round(avg)))
+            lines.append(
+                f"{medals[i]} <@{helper_id}> — {stars} **{avg:.1f}** ({count} оценок)"
+            )
+        embed = discord.Embed(
+            title="⭐ Рейтинг хелперов",
+            description="\n".join(lines),
+            color=0xffd166,
+        )
+        embed.set_footer(text="Оценки ставят авторы тикетов после закрытия")
+        await interaction.response.send_message(embed=embed)
+
 
 # ── Регистрация persistent-вьюх (один раз, до подключения к гейтвею) ──────────
 
@@ -925,8 +1093,6 @@ _VIEWS_DONE = False
 def register_views(bot: commands.Bot):
     """Регистрирует кнопки, чтобы они работали после рестарта бота."""
     global _VIEWS_DONE
-    if _VIEWS_DONE:
-        return
     try:
         bot.add_view(TicketTypeView())
         bot.add_view(TicketCloseView())
@@ -935,8 +1101,10 @@ def register_views(bot: commands.Bot):
         bot.add_view(StaffAppActionView())
         for t in ("question", "staff_app", "complaint"):
             bot.add_view(SingleTicketView(t))
-        _VIEWS_DONE = True
-        log.info("Тикет-кнопки зарегистрированы")
+        _rearm_rating_views(bot)
+        if not _VIEWS_DONE:
+            _VIEWS_DONE = True
+            log.info("Тикет-кнопки зарегистрированы")
     except Exception:
         log.exception("Не удалось зарегистрировать persistent-вьюхи")
 
