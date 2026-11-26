@@ -5,6 +5,7 @@ from discord.ext import commands
 
 import backup
 from backup import backup_loop
+from version import BUILD
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -67,7 +68,7 @@ async def on_ready():
     guild = discord.Object(id=guild_id)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
-    log.info("Tickets-бот запущен: %s | Синкнуто %d команд на гильдию %d", bot.user, len(synced), guild_id)
+    log.info("Tickets-бот запущен: %s | Синкнуто %d команд на гильдию %d | сборка %s", bot.user, len(synced), guild_id, BUILD)
     _synced_once = True
 
 

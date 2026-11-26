@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from storage import load, save
+from version import BUILD
 
 log = logging.getLogger(__name__)
 
@@ -1124,6 +1125,7 @@ class Tickets(commands.Cog):
             description="\n".join(lines),
             color=discord.Color.from_str("#a9c9ff"),
         )
+        embed.set_footer(text=f"сборка {BUILD}")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="ticket_ratings", description="Рейтинг хелперов по оценкам из тикетов ⭐")

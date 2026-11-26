@@ -92,6 +92,7 @@ import re
 t = open("cogs/tickets.py", encoding="utf-8").read()
 cjk = len(re.findall(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]", t))
 check("no CJK", cjk == 0, str(cjk))
+check("build label", tc.BUILD == __import__("version").BUILD and "сборка {BUILD}" in t)
 
 print(f"\nВсего провалов: {len(fails)}")
 if fails:
