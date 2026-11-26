@@ -3,6 +3,9 @@ import asyncio, json, logging, os, sys
 import discord
 from discord.ext import commands
 
+import backup
+from backup import backup_loop
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 
@@ -36,11 +39,20 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # Синк команд — только один раз за запуск: при переподключении к гейтвею
 # on_ready срабатывает снова, а лимиты на синк у Discord жёсткие.
 _synced_once = False
+_backup_started = False
 
 
 @bot.event
 async def on_ready():
-    global _synced_once
+    global _synced_once, _backup_started
+    if not _backup_started:
+        _backup_started = True
+        bot.loop.create_task(backup_loop(bot))
+        log.info(
+            "Авто-бэкап data/ запущен: каждые %s ч., храним %s",
+            backup.INTERVAL_HOURS,
+            backup.KEEP,
+        )
     guild_id = int(os.environ.get("GUILD_ID", "0"))
     if not guild_id and os.path.exists(CONFIG_PATH):
         try:
