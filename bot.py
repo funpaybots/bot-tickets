@@ -33,9 +33,14 @@ intents = discord.Intents.default()
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
+# Синк команд — только один раз за запуск: при переподключении к гейтвею
+# on_ready срабатывает снова, а лимиты на синк у Discord жёсткие.
+_synced_once = False
+
 
 @bot.event
 async def on_ready():
+    global _synced_once
     guild_id = int(os.environ.get("GUILD_ID", "0"))
     if not guild_id and os.path.exists(CONFIG_PATH):
         try:
@@ -45,10 +50,13 @@ async def on_ready():
             pass
     if not guild_id:
         guild_id = 1573386089467748482
+    if _synced_once:
+        return
     guild = discord.Object(id=guild_id)
     bot.tree.copy_global_to(guild=guild)
     synced = await bot.tree.sync(guild=guild)
     log.info("Tickets-бот запущен: %s | Синкнуто %d команд на гильдию %d", bot.user, len(synced), guild_id)
+    _synced_once = True
 
 
 @bot.tree.error
