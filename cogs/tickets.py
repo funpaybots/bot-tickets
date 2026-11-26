@@ -2,6 +2,7 @@
 """Тикеты: вопрос, заявка в стафф, жалоба."""
 
 import datetime
+import io
 import logging
 import discord
 from discord import app_commands
@@ -324,6 +325,57 @@ async def _create_ticket(interaction: discord.Interaction, ticket_type: str, fie
     await interaction.followup.send(f"Тикет создан: {channel.mention}", ephemeral=True)
 
 
+# ── Транскрипт тикета ─────────────────────────────────────────────────────────
+
+TRANSCRIPT_LIMIT = 200          # сколько последних сообщений выгружаем
+TRANSCRIPT_MAX_CHARS = 6_000_000  # ~6 МБ текста: лимит Discord на файл — 8 МБ
+
+
+def _transcript_line(msg: discord.Message) -> str:
+    """Одна строка истории: время, автор, текст/вложения."""
+    ts = msg.created_at.strftime("%d.%m.%Y %H:%M")
+    author = f"{msg.author.display_name} ({msg.author.id})"
+    parts = []
+    content = (getattr(msg, "system_content", "") or msg.content or "").strip()
+    if content:
+        parts.append(content)
+    for att in msg.attachments:
+        parts.append(f"[вложение] {att.filename} — {att.url}")
+    for emb in msg.embeds:
+        title = emb.title or (emb.description or "")[:100]
+        parts.append(f"[embed] {title}".strip())
+    if msg.stickers:
+        parts.append("[стикер] " + ", ".join(s.name for s in msg.stickers))
+    return f"[{ts}] {author}: {' | '.join(parts) or '[без текста]'}"
+
+
+async def _build_transcript(channel, info: dict, closer, tinfo: dict):
+    """История тикета файлом. Возвращает (файл или None, число сообщений)."""
+    try:
+        messages = [m async for m in channel.history(limit=TRANSCRIPT_LIMIT)]
+    except discord.HTTPException as exc:
+        log.warning("Не удалось прочитать историю тикета %s: %s", channel.id, exc)
+        return None, 0
+    messages.reverse()  # история приходит от новых к старым
+
+    closer_name = getattr(closer, "display_name", None) or str(closer)
+    header = [
+        f"Тикет: #{channel.name}",
+        f"Тип: {tinfo['label']}",
+        f"Создал: <@{info.get('user_id')}>",
+        f"Создан: {info.get('created_at', '—')}",
+        f"Закрыл: {closer_name} ({closer.id})",
+        f"Закрыт: {info.get('closed_at', '—')}",
+        f"Сообщений в выгрузке: {len(messages)}",
+        "-" * 60,
+    ]
+    text = "\n".join(header) + "\n\n" + "\n".join(_transcript_line(m) for m in messages)
+    if len(text) > TRANSCRIPT_MAX_CHARS:
+        text = text[:TRANSCRIPT_MAX_CHARS] + "\n\n… выгрузка обрезана по размеру"
+    buf = io.BytesIO(text.encode("utf-8"))
+    return discord.File(buf, filename=f"ticket-{channel.id}.txt"), len(messages)
+
+
 # ── Кнопка закрытия ───────────────────────────────────────────────────────────
 
 class TicketCloseView(discord.ui.View):
@@ -371,6 +423,7 @@ async def _do_close(channel: discord.TextChannel, closer: discord.Member, intera
     if log_ch_id:
         log_ch = channel.guild.get_channel(int(log_ch_id))
         if log_ch:
+            transcript, count = await _build_transcript(channel, info, closer, tinfo)
             log_embed = discord.Embed(
                 title=f"🔒 Тикет закрыт — {tinfo['label']}",
                 description=(
@@ -382,7 +435,19 @@ async def _do_close(channel: discord.TextChannel, closer: discord.Member, intera
                 ),
                 color=discord.Color.red(),
             )
-            await log_ch.send(embed=log_embed)
+            if transcript:
+                log_embed.add_field(
+                    name="📄 Выгрузка",
+                    value=f"{count} сообщений — в файле ниже",
+                    inline=False,
+                )
+            try:
+                if transcript:
+                    await log_ch.send(embed=log_embed, file=transcript)
+                else:
+                    await log_ch.send(embed=log_embed)
+            except discord.HTTPException as exc:
+                log.warning("Лог тикета %s не отправлен: %s", channel.id, exc)
 
     # Просим автора оценить хелпера (в ЛС), если ответ был
     helper_id = info.get("answered_by_id")
