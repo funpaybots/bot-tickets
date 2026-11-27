@@ -373,7 +373,9 @@ async def _build_transcript(channel, info: dict, closer, tinfo: dict):
     text = "\n".join(header) + "\n\n" + "\n".join(_transcript_line(m) for m in messages)
     if len(text) > TRANSCRIPT_MAX_CHARS:
         text = text[:TRANSCRIPT_MAX_CHARS] + "\n\n… выгрузка обрезана по размеру"
-    buf = io.BytesIO(text.encode("utf-8"))
+    # BOM в начале файла: без него Блокнот/WordPad на Windows открывают
+    # выгрузку как cp1251 и русский текст превращается в кракозябры.
+    buf = io.BytesIO(text.encode("utf-8-sig"))
     return discord.File(buf, filename=f"ticket-{channel.id}.txt"), len(messages)
 
 

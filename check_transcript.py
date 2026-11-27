@@ -102,7 +102,9 @@ async def main():
 
     f, count = await tc._build_transcript(_Channel(msgs), info, closer, tinfo)
     check("file built", f is not None and count == 3, str(count))
-    text = f.fp.getvalue().decode("utf-8")
+    raw = f.fp.getvalue()
+    check("file has BOM", raw[:3] == b"\xef\xbb\xbf", repr(raw[:3]))
+    text = raw.decode("utf-8-sig")
     check("filename by channel id", f.filename == "ticket-100500.txt", f.filename)
     check("header type", "Тип: Вопрос" in text)
     check("header closer", "модер (7)" in text)
