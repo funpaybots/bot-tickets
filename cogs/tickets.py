@@ -496,6 +496,26 @@ async def _dm(member, embed, view=None) -> bool:
         return False
 
 
+async def _find_member(guild, user_id):
+    """Участник из кеша или запросом к API.
+
+    Без интента members кеш гильдии неполный: get_member() возвращает None
+    даже для тех, кто спокойно сидит на сервере. fetch_member() идёт в REST
+    и находит участника всегда — поэтому сначала кеш, потом запрос.
+    """
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    member = guild.get_member(uid)
+    if member is not None:
+        return member
+    try:
+        return await guild.fetch_member(uid)
+    except discord.HTTPException:
+        return None
+
+
 # ── Оценка хелпера после закрытия тикета ──────────────────────────────────────
 
 def _save_rating(guild_id: int, ticket_id: int, helper_id: int, stars: int, by_id: int) -> bool:
@@ -659,7 +679,7 @@ async def _submit_answer(interaction: discord.Interaction, text: str):
     embed.set_footer(text=f"Ответил: {interaction.user}")
     await interaction.channel.send(content=f"<@{info['user_id']}>", embed=embed)
 
-    member = interaction.guild.get_member(int(info["user_id"]))
+    member = await _find_member(interaction.guild, info["user_id"])
     tinfo = TICKET_TYPES.get(info.get("type", "question"), TICKET_TYPES["question"])
     dm_embed = discord.Embed(
         title=f"✍️ Ответ на твоё обращение ({tinfo['label']})",
@@ -724,22 +744,22 @@ async def _accept_app(interaction: discord.Interaction):
         return
 
     guild = interaction.guild
-    member = guild.get_member(int(info["user_id"]))
     role_name = (info.get("fields") or {}).get("__role", "")
     role = guild.get_role(ROLE_BY_NAME.get(role_name, 0))
 
+    await interaction.response.defer()
+    member = await _find_member(guild, info["user_id"])
     if member is None:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Не нашёл участника на сервере — возможно, он уже вышел.", ephemeral=True
         )
         return
     if role is None:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Не нашёл роль «{role_name}». Проверь ID ролей в коде бота.", ephemeral=True
         )
         return
 
-    await interaction.response.defer()
     try:
         await member.add_roles(role, reason=f"Заявка принята: {interaction.user}")
     except discord.Forbidden:
@@ -787,7 +807,7 @@ async def _reject_app(interaction: discord.Interaction, reason: str):
 
     await interaction.response.defer()
     guild = interaction.guild
-    member = guild.get_member(int(info["user_id"]))
+    member = await _find_member(guild, info["user_id"])
     role_name = (info.get("fields") or {}).get("__role", "—")
 
     embed = discord.Embed(
